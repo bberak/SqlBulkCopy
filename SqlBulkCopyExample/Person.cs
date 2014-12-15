@@ -30,25 +30,24 @@ namespace SqlBulkCopyExample
         public string Number { get; set; }
     }
 
-    public class PersonInserter : BaseInserter<Person, int>
+    public class PersonInserter : BaseInserter<Person>
     {
         public PersonInserter()
             : base("Person")
         {
-            Auto(x => x.PersonId, "INT");
-            Column(x => x.Name);
-            Column(x => x.DateOfBirth);
-            Column(x => x.PhoneNumber.Number);
+            Column("PersonId", dbType: "INT");
+            Column("Name", x => x.Name);
+            Column("DateOfBirth", x => x.DateOfBirth);
+            Column("AreaCode", x => x.PhoneNumber.AreaCode);
+            Column("Number", x => x.PhoneNumber.Number);
+            Column("FullPhoneNumber", x => x.PhoneNumber.AreaCode  + "-" + x.PhoneNumber.Number);
+            Column("HasKids", x => x.Kids.Any());
+            Column("SumOfKidsAge", x => x.Kids.Sum(y => y.Age));
         }
 
-        public override int ConvertToAutoValue(IDictionary<string, object> dbKeys)
+        public override Person AfterAutoValuesRetrieved(Person src, IDictionary<string, object> autoValues)
         {
-            return (int)dbKeys["PersonId"];
-        }
-
-        public override Person AfterAutoValueRetrieved(Person src, int identity)
-        {
-            src.PersonId = identity;
+            src.PersonId = (int)autoValues["PersonId"];
 
             return src;
         }

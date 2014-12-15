@@ -12,5 +12,10 @@ CREATE TABLE [dbo].[Person](
 	[PersonId] [int] IDENTITY(1,1) NOT NULL,
 	[Name] [nvarchar](100) NOT NULL,
 	[DateOfBirth] [datetime] NULL,
+	[AreaCode] [nvarchar](100) NOT NULL,
+	[Number] [nvarchar](100) NOT NULL,
+	[FullPhoneNumber] [nvarchar](200) NOT NULL,
+	[HasKids] [bit] NOT NULL DEFAULT 0,
+	[SumOfKidsAge] [int] NOT NULL DEFAULT 0,
 	CONSTRAINT [PK_Person] PRIMARY KEY CLUSTERED ([PersonId] ASC)
 )

@@ -58,36 +58,36 @@
 
         private static void InsertDataUsingInsertStatements(IEnumerable<Person> people, SqlConnection connection)
         {
-            using (var command = connection.CreateCommand())
-            {
-                command.CommandText = "INSERT INTO Person (Name, DateOfBirth) VALUES (@Name, @DateOfBirth)";
-                var nameParam = command.Parameters.Add("@Name", SqlDbType.NVarChar);
-                var dobParam = command.Parameters.Add("@DateOfBirth", SqlDbType.DateTime);
-                foreach (var person in people)
-                {
-                    nameParam.Value = person.Name;
-                    dobParam.Value = person.DateOfBirth;
-                    command.ExecuteNonQuery();
-                }
-            }
+            //using (var command = connection.CreateCommand())
+            //{
+            //    command.CommandText = "INSERT INTO Person (Name, DateOfBirth) VALUES (@Name, @DateOfBirth)";
+            //    var nameParam = command.Parameters.Add("@Name", SqlDbType.NVarChar);
+            //    var dobParam = command.Parameters.Add("@DateOfBirth", SqlDbType.DateTime);
+            //    foreach (var person in people)
+            //    {
+            //        nameParam.Value = person.Name;
+            //        dobParam.Value = person.DateOfBirth;
+            //        command.ExecuteNonQuery();
+            //    }
+            //}
         }
 
         private static void InsertDataUsingSqlBulkCopy(IEnumerable<Person> people, SqlConnection connection)
         {
-            var bulkCopy = new SqlBulkCopy(connection);
-            bulkCopy.DestinationTableName = "Person";
-            bulkCopy.ColumnMappings.Add("Name", "Name");
-            bulkCopy.ColumnMappings.Add("DateOfBirth", "DateOfBirth");
+            //var bulkCopy = new SqlBulkCopy(connection);
+            //bulkCopy.DestinationTableName = "Person";
+            //bulkCopy.ColumnMappings.Add("Name", "Name");
+            //bulkCopy.ColumnMappings.Add("DateOfBirth", "DateOfBirth");
 
-            using (var dataReader = new ObjectDataReader<Person>(people))
-            {
-                bulkCopy.WriteToServer(dataReader);
-            }
+            //using (var dataReader = new ObjectDataReader<Person>(people))
+            //{
+            //    bulkCopy.WriteToServer(dataReader);
+            //}
         }
 
         private static void InsertDataUsingInserter(IEnumerable<Person> people, SqlConnection connection)
         {
-            IInserter<Person, int> inserter = new PersonInserter();
+            IInserter<Person> inserter = new PersonInserter();
 
             var newPeople = inserter.Insert(people, connection);
         }
@@ -108,7 +108,9 @@
                 .Select(i => new Person
                     {
                         Name = "Person" + i,
-                        DateOfBirth = new DateTime(1950 + (i % 50), ((i * 3) % 12) + 1, ((i * 7) % 29) + 1)
+                        DateOfBirth = new DateTime(1950 + (i % 50), ((i * 3) % 12) + 1, ((i * 7) % 29) + 1),
+                        Kids = new List<Kid> { new Kid { Age = 3 } },
+                        PhoneNumber = new PhoneNumber { AreaCode = "123", Number = "12345678" }
                     });
         }
     }

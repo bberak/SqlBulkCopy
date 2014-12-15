@@ -7,35 +7,32 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using Dapper;
+using System.Dynamic;
 
 namespace SqlBulkCopyExample
 {
-    public interface IInserter<T, TAutoValue>
+    public interface IInserter<T>
     {
         string TableName { get; }
 
-        TAutoValue ConvertToAutoValue(IDictionary<string, object> dbKeys);
-
-        T AfterAutoValueRetrieved(T src, TAutoValue autoValue);
+        T AfterAutoValuesRetrieved(T src, IDictionary<string, object> autoValues);
 
         IEnumerable<T> Insert(IEnumerable<T> items, IDbConnection conn, IDbTransaction externalTransaction = null);
     }
 
-    public abstract class BaseInserter<T, TAutoValue> : IInserter<T, TAutoValue>
+    public abstract class BaseInserter<T> : IInserter<T>
     {
         public string TableName { get; private set; }
 
-        private readonly List<ColumnMapping> Mappings;
+        private readonly List<ColumnMapping<T>> Mappings;
 
         public BaseInserter(string tableName)
         {
             TableName = tableName;
-            Mappings = new List<ColumnMapping> { };
+            Mappings = new List<ColumnMapping<T>> { };
         }
 
-        public abstract TAutoValue ConvertToAutoValue(IDictionary<string, object> dbAutoValues);
-
-        public abstract T AfterAutoValueRetrieved(T src, TAutoValue autoValue);
+        public abstract T AfterAutoValuesRetrieved(T src, IDictionary<string, object> autoValues);
         
         public IEnumerable<T> Insert(IEnumerable<T> items, IDbConnection conn, IDbTransaction externalTransaction = null)
         {
@@ -56,14 +53,22 @@ namespace SqlBulkCopyExample
             return items;
         }
 
-        protected virtual int ExecuteInsert(IEnumerable<T> items, IEnumerable<ColumnMapping> columns, IDbConnection conn, IDbTransaction externalTransaction = null)
+        protected virtual int ExecuteInsert(IEnumerable<T> items, IEnumerable<ColumnMapping<T>> columns, IDbConnection conn, IDbTransaction externalTransaction = null)
         {
-            var insert = String.Format("{0} {1} {2};", BeginInsertStatement(), ListColumns(Mappings), ListValues(Mappings));
+            var insert = String.Format("{0} {1} {2};", BeginInsertStatement(), ListColumns(columns), ListValues(columns));
             var result = 0;
+            var columnList = columns.ToList();
+            var transformedItems = items.Select(x =>
+            {
+                var expando = new ExpandoObject { };
+                columnList.ForEach(y => y.MapToRow(expando, x));
+                return expando;
+            })
+            .ToList();
 
             using (var transaction = externalTransaction ?? conn.BeginTransaction())
             {
-                result = conn.Execute(insert, items, transaction);
+                result = conn.Execute(insert, transformedItems, transaction);
 
                 transaction.Commit();
             }
@@ -73,8 +78,8 @@ namespace SqlBulkCopyExample
 
         protected virtual IEnumerable<T> ExecuteInsert(
             IEnumerable<T> items, 
-            IEnumerable<ColumnMapping> columns,
-            IEnumerable<ColumnMapping> autoColumns,
+            IEnumerable<ColumnMapping<T>> columns,
+            IEnumerable<ColumnMapping<T>> autoColumns,
             IDbConnection conn, 
             IDbTransaction externalTransaction = null)
         {
@@ -85,6 +90,14 @@ namespace SqlBulkCopyExample
                 ListColumns(columns),
                 InsertIntoTempTable(tempTable, autoColumns),
                 ListValues(columns));
+            var columnList = columns.ToList();
+            var transformedItems = items.Select(x =>
+            {
+                var expando = new ExpandoObject { };
+                columnList.ForEach(y => y.MapToRow(expando, x));
+                return expando;
+            })
+           .ToList();
 
             IDictionary<string, object>[] results = null;
 
@@ -92,7 +105,7 @@ namespace SqlBulkCopyExample
             {
                 conn.Execute(CreateTempTable(tempTable, autoColumns), null, transaction);
 
-                conn.Execute(insertStatement, items, transaction);
+                conn.Execute(insertStatement, transformedItems, transaction);
 
                 results = conn.Query(SelectTempTable(tempTable), null, transaction).Select(d => d as IDictionary<string, object>).ToArray();
 
@@ -103,7 +116,7 @@ namespace SqlBulkCopyExample
                     throw new DataException("Received the incorrect number of results from the INSERT");
                 
                 items = items.Select((x, idx)
-                    => AfterAutoValueRetrieved(x, ConvertToAutoValue(results[idx])))
+                    => AfterAutoValuesRetrieved(x, results[idx]))
                     .ToList();
 
                 conn.Execute(DropTempTable(tempTable), null, transaction);
@@ -111,17 +124,10 @@ namespace SqlBulkCopyExample
                 transaction.Commit();
             }
 
-            if (results != null && results.Any())
-            {
-                return items.Select((x, idx)
-                    => AfterAutoValueRetrieved(x, ConvertToAutoValue(results[idx])))
-                    .ToList();
-            }
-
             return items;
         }
 
-        protected virtual string CreateTempTable(string name, IEnumerable<ColumnMapping> autoColumns)
+        protected virtual string CreateTempTable(string name, IEnumerable<ColumnMapping<T>> autoColumns)
         {
             var r= String.Format(@"
                 IF OBJECT_ID('tempdb..#{0}') IS NOT NULL 
@@ -130,7 +136,7 @@ namespace SqlBulkCopyExample
                     END;               
                 CREATE TABLE #{0} ({1})", 
                 name,
-                String.Join(", ", autoColumns.Select(x => x.Destination + " " + x.DbType).ToArray()));
+                autoColumns.ToString(x => x.DbColumnName + " " + x.DbType));
 
             return r;
         }
@@ -140,22 +146,22 @@ namespace SqlBulkCopyExample
             return String.Format("INSERT INTO {0}", TableName);
         }
 
-        protected virtual string ListColumns(IEnumerable<ColumnMapping> columns)
+        protected virtual string ListColumns(IEnumerable<ColumnMapping<T>> columns)
         {
-            return String.Format("({0})", String.Join(", ", columns.Select(x => x.Destination).ToArray()));
+            return String.Format("({0})", columns.ToString(x => x.DbColumnName));
         }
 
-        protected virtual string InsertIntoTempTable(string name, IEnumerable<ColumnMapping> autoColumns)
+        protected virtual string InsertIntoTempTable(string name, IEnumerable<ColumnMapping<T>> autoColumns)
         {
             return String.Format("OUTPUT {0} INTO #{1} ({2})",
-                String.Join(", ", autoColumns.Select(x => String.Format("INSERTED.{0}", x.Destination)).ToArray()),
+                autoColumns.ToString(x => "INSERTED." + x.DbColumnName),
                 name,
-                String.Join(", ", autoColumns.Select(x => x.Destination).ToArray()));
+                autoColumns.ToString(x => x.DbColumnName));
         }
 
-        protected virtual string ListValues(IEnumerable<ColumnMapping> columns)
+        protected virtual string ListValues(IEnumerable<ColumnMapping<T>> columns)
         {
-            return String.Format("VALUES ({0})", String.Join(", ", columns.Select(x => "@" + x.Destination).ToArray()));
+            return String.Format("VALUES ({0})", columns.ToString(x => "@" + x.DbColumnName));
         }
 
         protected virtual string SelectTempTable(string name)
@@ -167,38 +173,25 @@ namespace SqlBulkCopyExample
         {
             return String.Format("DROP TABLE #{0};", name);
         }
-
-        protected ColumnMapping Column(string source, string destination, bool isAutoGenerated = false, string dbType = null)
-        {
-            var item = new ColumnMapping(source, destination, isAutoGenerated, dbType);
-
-            Mappings.Add(item);
-
-            return item;
-        }
         
-        protected ColumnMapping Column<TProperty>(Expression<Func<T, TProperty>> propertyLambda, string destination, bool isAutoGenerated = false, string dbType = null)
+        protected ColumnMapping<T> Column<TSelector>(string dbColumn, Func<T, TSelector> map = null)
         {
-            var propertyInfo = GetPropertyInfo(propertyLambda);
+            Action<IDictionary<string, object>, T> mapToRow = (d, t) => d[dbColumn] = map(t);
 
-            return Column(propertyInfo.Name, destination, isAutoGenerated, dbType);
+            var mapping = new ColumnMapping<T>(dbColumn, mapToRow, isAutoGenerated: false, dbType: null);
+
+            Mappings.Add(mapping);
+
+            return mapping;
         }
 
-        protected ColumnMapping AutoColumn<TProperty>(Expression<Func<T, TProperty>> propertyLambda, string destination, string dbType)
+        protected ColumnMapping<T> Column(string dbColumn, string dbType)
         {
-            return Column(propertyLambda, destination, isAutoGenerated: true, dbType: dbType);
-        }
+            var mapping = new ColumnMapping<T>(dbColumn, mapToRow: null, isAutoGenerated: true, dbType: dbType);
 
-        protected ColumnMapping Column<TProperty>(Expression<Func<T, TProperty>> propertyLambda, bool isAutoGenerated = false, string dbType = null)
-        {
-            var propertyInfo = GetPropertyInfo(propertyLambda);
+            Mappings.Add(mapping);
 
-            return Column(propertyInfo.Name, propertyInfo.Name, isAutoGenerated, dbType);
-        }
-
-        protected ColumnMapping Auto<TProperty>(Expression<Func<T, TProperty>> propertyLambda, string dbType)
-        {
-            return Column(propertyLambda, isAutoGenerated: true, dbType: dbType);
+            return mapping;
         }
 
         private static PropertyInfo GetPropertyInfo<TProperty>(Expression<Func<T, TProperty>> propertyLambda)
@@ -228,22 +221,33 @@ namespace SqlBulkCopyExample
         }
     }
 
-    public class ColumnMapping
+    public class ColumnMapping<T>
     {
-        public string Source { get; private set; }
-
-        public string Destination { get; private set; }
+        public string DbColumnName { get; private set; }
 
         public bool IsAutoGenerated { get; private set; }
 
         public string DbType { get; private set; }
 
-        public ColumnMapping(string source, string destination, bool isAutoGenerated = false, string dbType = null)
+        public Action<IDictionary<string, object>, T> MapToRow { get; private set; }
+
+        public ColumnMapping(string dbColumnName, Action<IDictionary<string, object>, T> mapToRow = null, bool isAutoGenerated = false, string dbType = null)
         {
-            Source = source;
-            Destination = destination;
+            DbColumnName = dbColumnName;
+            MapToRow = mapToRow;
             IsAutoGenerated = isAutoGenerated;
             DbType = dbType;
+        }
+    }
+
+    public static class ColumnMappingExt
+    {
+        public static string ToString<T>(this IEnumerable<ColumnMapping<T>> items, Func<ColumnMapping<T>, string> format, string joiner = ", ")
+        {
+            if (items == null)
+                return null;
+
+            return String.Join(joiner, items.Select(format).ToArray());
         }
     }
 }
