@@ -15,7 +15,7 @@ namespace SqlBulkCopyExample
     {
         string TableName { get; }
 
-        T AfterInsert(T item, IDictionary<string, object> identites);
+        T AfterInsert(T item, IDictionary<string, object> identities);
 
         IEnumerable<T> Insert(
             IEnumerable<T> items,
