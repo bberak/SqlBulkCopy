@@ -20,8 +20,7 @@ namespace SqlBulkCopyExample
         IEnumerable<T> Insert(
             IEnumerable<T> items,
             IDbConnection conn,
-            IDbTransaction externalTransaction = null,
-            Action<IEnumerable<T>, IDbConnection, IDbTransaction> beforeCommit = null);
+            Action<IEnumerable<T>, IDbConnection> beforeComplete = null);
     }
 
     public abstract class BaseInserter<T> : IInserter<T>
@@ -38,16 +37,15 @@ namespace SqlBulkCopyExample
 
         public abstract T AfterInsert(T item, IDictionary<string, object> identities);
 
-        protected virtual void BeforeCommit(IEnumerable<T> items, IDbConnection conn, IDbTransaction currentTransaction)
+        protected virtual void BeforeComplete(IEnumerable<T> items, IDbConnection conn)
         {
             return;
         }
         
         public IEnumerable<T> Insert(
             IEnumerable<T> items, 
-            IDbConnection conn, 
-            IDbTransaction externalTransaction = null, 
-            Action<IEnumerable<T>, IDbConnection, IDbTransaction> beforeCommit = null)
+            IDbConnection conn,
+            Action<IEnumerable<T>, IDbConnection> beforeComplete = null)
         {
             if (items == null || items.Any() == false)
                 return items;
@@ -55,40 +53,20 @@ namespace SqlBulkCopyExample
             var columns = Mappings.Where(x => !x.IsIdentity);
             var identities = Mappings.Where(x => x.IsIdentity);
 
-            Action<IDbTransaction> insert = transaction =>
-            {
-                if (identities.Any())
-                    items = ExecuteInsert(items, columns, identities, conn, transaction);
-                else
-                    ExecuteInsert(items, columns, conn, transaction);
-
-                BeforeCommit(items, conn, transaction);
-
-                if (beforeCommit != null)
-                    beforeCommit(items, conn, transaction);
-            };
-
-            if (externalTransaction == null)
-            {
-                using (var transaction = conn.BeginTransaction())
-                {
-                    insert(transaction);
-
-                    transaction.Commit();
-                }
-            }
+            if (identities.Any())
+                items = ExecuteInsert(items, columns, identities, conn);
             else
-            {
-                if (externalTransaction.Connection != conn)
-                    throw new InvalidOperationException("The transaction was started by a different connection");
+                ExecuteInsert(items, columns, conn);
 
-                insert(externalTransaction);
-            }
+            BeforeComplete(items, conn);
+
+            if (beforeComplete != null)
+                beforeComplete(items, conn);
 
             return items;
         }
 
-        protected virtual int ExecuteInsert(IEnumerable<T> items, IEnumerable<ColumnMapping<T>> columns, IDbConnection conn, IDbTransaction transaction)
+        protected virtual int ExecuteInsert(IEnumerable<T> items, IEnumerable<ColumnMapping<T>> columns, IDbConnection conn)
         {
             var insert = String.Format("{0} {1} {2};", BeginInsertStatement(), ListColumns(columns), ListValues(columns));
             var result = 0;
@@ -101,7 +79,7 @@ namespace SqlBulkCopyExample
             })
             .ToList();
 
-            result = conn.Execute(insert, transformedItems, transaction);
+            result = conn.Execute(insert, transformedItems);
 
             return result;
         }
@@ -110,8 +88,7 @@ namespace SqlBulkCopyExample
             IEnumerable<T> items, 
             IEnumerable<ColumnMapping<T>> columns,
             IEnumerable<ColumnMapping<T>> identities,
-            IDbConnection conn, 
-            IDbTransaction transaction)
+            IDbConnection conn)
         {
             var rng = new Random(Environment.TickCount);
             var tempTable = String.Format("{0}_{1}", TableName, rng.Next(0, 10000000));
@@ -129,11 +106,11 @@ namespace SqlBulkCopyExample
             })
            .ToList();
 
-            conn.Execute(CreateTempTable(tempTable, identities), null, transaction);
+            conn.Execute(CreateTempTable(tempTable, identities));
 
-            conn.Execute(insertStatement, transformedItems, transaction);
+            conn.Execute(insertStatement, transformedItems);
 
-            var results = conn.Query(SelectTempTable(tempTable), null, transaction).Select(d => d as IDictionary<string, object>).ToArray();
+            var results = conn.Query(SelectTempTable(tempTable)).Select(d => d as IDictionary<string, object>).ToArray();
 
             if (results == null || results.Any() == false)
                 throw new DataException("Failed to retrieve any results from the INSERT");
@@ -145,7 +122,7 @@ namespace SqlBulkCopyExample
                 => AfterInsert(x, results[idx]))
                 .ToList();
 
-            conn.Execute(DropTempTable(tempTable), null, transaction);
+            conn.Execute(DropTempTable(tempTable));
             
             return items;
         }

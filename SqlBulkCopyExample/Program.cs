@@ -9,6 +9,7 @@
     using SqlBulkCopyExample.Properties;
     using Dapper;
     using System.Dynamic;
+    using System.Transactions;
 
     class Program
     {
@@ -113,45 +114,66 @@
         {
             IInserter<Person> inserter = new PersonInserter();
 
-            var newPeople = inserter.Insert(people, connection, beforeCommit: (items, conn, trans) =>
+            using (var scope = new TransactionScope())
             {
-                var kids = items.SelectMany(p => p.Kids.Select(k => new { p.PersonId, k.Age })).ToList();
+                connection.EnlistTransaction(Transaction.Current);
 
-                var insertKids = "INSERT INTO Kid (PersonId, Age) VALUES (@PersonId, @Age)";
+                var newPeople = inserter.Insert(people, connection, beforeComplete: (items, conn) =>
+                {
+                    var kids = items.SelectMany(p => p.Kids.Select(k => new { p.PersonId, k.Age })).ToList();
 
-                var rowsInserted = conn.Execute(insertKids, kids, trans);
+                    var insertKids = "INSERT INTO Kid (PersonId, Age) VALUES (@PersonId, @Age)";
 
-                if (rowsInserted != kids.Count())
-                    throw new Exception("Did not insert the correct number of kids");
-            });
+                    var rowsInserted = conn.Execute(insertKids, kids);
+
+                    if (rowsInserted != kids.Count())
+                        throw new Exception("Did not insert the correct number of kids");
+                });
+
+                scope.Complete();
+            }
         }
 
         private static void InsertDataUsingInserter2(IEnumerable<Person> people, SqlConnection connection)
         {
             IInserter<Person> peopleInserter = new PersonInserter();
 
-            people = peopleInserter.Insert(people, connection, beforeCommit: (items, conn, trans) =>
+            using (var scope = new TransactionScope())
             {
-                IInserter<Tuple<int, Kid>> kidsInserter = new KidInserter();
+                connection.EnlistTransaction(Transaction.Current);
 
-                var kids = items.SelectMany(p => p.Kids.Select(k => new Tuple<int, Kid>(p.PersonId, k)));
+                people = peopleInserter.Insert(people, connection, beforeComplete: (items, conn) =>
+                {
+                    IInserter<Tuple<int, Kid>> kidsInserter = new KidInserter();
 
-                kidsInserter.Insert(kids, conn, trans);
-            });
+                    var kids = items.SelectMany(p => p.Kids.Select(k => new Tuple<int, Kid>(p.PersonId, k)));
+
+                    kidsInserter.Insert(kids, conn);
+                });
+
+                scope.Complete();
+            }
         }
 
         private static void InsertDataUsingInserter3(IEnumerable<Person> people, SqlConnection connection)
         {
             IInserter<Person> peopleInserter = new PersonInserter();
 
-            people = peopleInserter.Insert(people, connection, beforeCommit: (items, conn, trans) =>
+            using (var scope = new TransactionScope())
             {
-                IInserter<PersonToKidMapping> kidsInserter = new KidInserter2();
+                connection.EnlistTransaction(Transaction.Current);
 
-                var kids = items.SelectMany(p => p.Kids.Select(k => new PersonToKidMapping(p, k) ));
+                people = peopleInserter.Insert(people, connection, beforeComplete: (items, conn) =>
+                {
+                    IInserter<PersonToKidMapping> kidsInserter = new KidInserter2();
 
-                kidsInserter.Insert(kids, conn, trans);
-            });
+                    var kids = items.SelectMany(p => p.Kids.Select(k => new PersonToKidMapping(p, k)));
+
+                    kidsInserter.Insert(kids, conn);
+                });
+
+                scope.Complete();
+            }
         }
 
         private static void RecreateDatabase(SqlConnection connection)
