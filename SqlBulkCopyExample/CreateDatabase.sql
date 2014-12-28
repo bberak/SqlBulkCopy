@@ -8,6 +8,7 @@ END
 CREATE DATABASE [Labs]
 
 USE [Labs]
+
 CREATE TABLE [dbo].[Person](
 	[PersonId] [int] IDENTITY(1,1) NOT NULL,
 	[Name] [nvarchar](100) NOT NULL,
@@ -18,4 +19,12 @@ CREATE TABLE [dbo].[Person](
 	[HasKids] [bit] NOT NULL DEFAULT 0,
 	[SumOfKidsAge] [int] NOT NULL DEFAULT 0,
 	CONSTRAINT [PK_Person] PRIMARY KEY CLUSTERED ([PersonId] ASC)
+)
+
+CREATE TABLE [dbo].[Kid](
+	[KidId] [int] IDENTITY(1, 1) NOT NULL PRIMARY KEY,
+	[PersonId] [int] NOT NULL,
+	[Age] [int] NOT NULL,
+	CONSTRAINT [FK_Kid_To_Person] FOREIGN KEY ([PersonId]) REFERENCES [Person]([PersonId]),
+
 )
