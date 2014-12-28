@@ -15,7 +15,7 @@ namespace SqlBulkCopyExample
     {
         string TableName { get; }
 
-        T AfterInsert(T item, IDictionary<string, object> autoValues);
+        T AfterInsert(T item, IDictionary<string, object> identites);
 
         IEnumerable<T> Insert(
             IEnumerable<T> items,
@@ -109,7 +109,7 @@ namespace SqlBulkCopyExample
         protected virtual IEnumerable<T> ExecuteInsert(
             IEnumerable<T> items, 
             IEnumerable<ColumnMapping<T>> columns,
-            IEnumerable<ColumnMapping<T>> autoColumns,
+            IEnumerable<ColumnMapping<T>> identities,
             IDbConnection conn, 
             IDbTransaction transaction)
         {
@@ -118,7 +118,7 @@ namespace SqlBulkCopyExample
             var insertStatement = String.Format("{0} {1} {2} {3};", 
                 BeginInsertStatement(),
                 ListColumns(columns),
-                InsertIntoTempTable(tempTable, autoColumns),
+                InsertIntoTempTable(tempTable, identities),
                 ListValues(columns));
             var columnList = columns.ToList();
             var transformedItems = items.Select(x =>
@@ -129,7 +129,7 @@ namespace SqlBulkCopyExample
             })
            .ToList();
 
-            conn.Execute(CreateTempTable(tempTable, autoColumns), null, transaction);
+            conn.Execute(CreateTempTable(tempTable, identities), null, transaction);
 
             conn.Execute(insertStatement, transformedItems, transaction);
 
@@ -150,7 +150,7 @@ namespace SqlBulkCopyExample
             return items;
         }
 
-        protected virtual string CreateTempTable(string name, IEnumerable<ColumnMapping<T>> autoColumns)
+        protected virtual string CreateTempTable(string name, IEnumerable<ColumnMapping<T>> identities)
         {
             var r= String.Format(@"
                 IF OBJECT_ID('tempdb..#{0}') IS NOT NULL 
@@ -159,7 +159,7 @@ namespace SqlBulkCopyExample
                     END;               
                 CREATE TABLE #{0} ({1});", 
                 name,
-                autoColumns.ToString(x => x.DbColumnName + " " + x.DbType));
+                identities.ToString(x => x.DbColumnName + " " + x.DbType));
 
             return r;
         }
@@ -174,12 +174,12 @@ namespace SqlBulkCopyExample
             return String.Format("({0})", columns.ToString(x => x.DbColumnName));
         }
 
-        protected virtual string InsertIntoTempTable(string name, IEnumerable<ColumnMapping<T>> autoColumns)
+        protected virtual string InsertIntoTempTable(string name, IEnumerable<ColumnMapping<T>> identities)
         {
             return String.Format("OUTPUT {0} INTO #{1} ({2})",
-                autoColumns.ToString(x => "INSERTED." + x.DbColumnName),
+                identities.ToString(x => "INSERTED." + x.DbColumnName),
                 name,
-                autoColumns.ToString(x => x.DbColumnName));
+                identities.ToString(x => x.DbColumnName));
         }
 
         protected virtual string ListValues(IEnumerable<ColumnMapping<T>> columns)
