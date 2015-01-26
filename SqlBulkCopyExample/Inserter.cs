@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using Dapper;
 using System.Dynamic;
+using System.Threading.Tasks;
 
 namespace SqlBulkCopyExample
 {
@@ -22,6 +23,12 @@ namespace SqlBulkCopyExample
             IDbConnection conn,
             IDbTransaction externalTransaction = null,
             Action<IEnumerable<T>, IDbConnection, IDbTransaction> beforeCommit = null);
+
+        Task<IEnumerable<T>> InsertAsync(
+            IEnumerable<T> items,
+            IDbConnection conn,
+            IDbTransaction externalTransaction = null,
+            Func<IEnumerable<T>, IDbConnection, IDbTransaction, Task> beforeCommitAsync = null);
     }
 
     public abstract class BaseInserter<T> : IInserter<T>
@@ -39,6 +46,11 @@ namespace SqlBulkCopyExample
         public abstract T AfterInsert(T item, IDictionary<string, object> identities);
 
         protected virtual void BeforeCommit(IEnumerable<T> items, IDbConnection conn, IDbTransaction currentTransaction)
+        {
+            return;
+        }
+
+        protected virtual async Task BeforeCommitAsync(IEnumerable<T> items, IDbConnection conn, IDbTransaction currentTransaction)
         {
             return;
         }
@@ -88,6 +100,51 @@ namespace SqlBulkCopyExample
             return items;
         }
 
+        public async Task<IEnumerable<T>> InsertAsync(
+            IEnumerable<T> items,
+            IDbConnection conn,
+            IDbTransaction externalTransaction = null,
+            Func<IEnumerable<T>, IDbConnection, IDbTransaction, Task> beforeCommitAsync = null)
+        {
+            if (items == null || items.Any() == false)
+                return items;
+
+            var columns = Mappings.Where(x => !x.IsIdentity);
+            var identities = Mappings.Where(x => x.IsIdentity);
+
+            Func<IDbTransaction, Task> insert = async transaction =>
+            {
+                if (identities.Any())
+                    items = await ExecuteInsertAsync(items, columns, identities, conn, transaction);
+                else
+                    await ExecuteInsertAsync(items, columns, conn, transaction);
+
+                await BeforeCommitAsync(items, conn, transaction);
+
+                if (beforeCommitAsync != null)
+                    await beforeCommitAsync(items, conn, transaction);
+            };
+
+            if (externalTransaction == null)
+            {
+                using (var transaction = conn.BeginTransaction())
+                {
+                    await insert(transaction);
+
+                    transaction.Commit();
+                }
+            }
+            else
+            {
+                if (externalTransaction.Connection != conn)
+                    throw new InvalidOperationException("The transaction was started by a different connection");
+
+                await insert(externalTransaction);
+            }
+
+            return items;
+        }
+
         protected virtual int ExecuteInsert(IEnumerable<T> items, IEnumerable<ColumnMapping<T>> columns, IDbConnection conn, IDbTransaction transaction)
         {
             var insert = String.Format("{0} {1} {2};", BeginInsertStatement(), ListColumns(columns), ListValues(columns));
@@ -101,7 +158,25 @@ namespace SqlBulkCopyExample
             })
             .ToList();
 
-            result = conn.Execute(insert, transformedItems, transaction);
+            result = conn.Execute(sql: insert, param: transformedItems, transaction: transaction);
+
+            return result;
+        }
+
+        protected virtual async Task<int> ExecuteInsertAsync(IEnumerable<T> items, IEnumerable<ColumnMapping<T>> columns, IDbConnection conn, IDbTransaction transaction)
+        {
+            var insert = String.Format("{0} {1} {2};", BeginInsertStatement(), ListColumns(columns), ListValues(columns));
+            var result = 0;
+            var columnList = columns.ToList();
+            var transformedItems = items.Select(x =>
+            {
+                var expando = new ExpandoObject { };
+                columnList.ForEach(y => y.MapToRow(expando, x));
+                return expando;
+            })
+            .ToList();
+
+            result = await conn.ExecuteAsync(sql: insert, param: transformedItems, transaction: transaction);
 
             return result;
         }
@@ -129,11 +204,11 @@ namespace SqlBulkCopyExample
             })
            .ToList();
 
-            conn.Execute(CreateTempTable(tempTable, identities), null, transaction);
+            conn.Execute(sql: CreateTempTable(tempTable, identities), param: null, transaction: transaction);
 
-            conn.Execute(insertStatement, transformedItems, transaction);
+            conn.Execute(sql: insertStatement, param: transformedItems, transaction: transaction);
 
-            var results = conn.Query(SelectTempTable(tempTable), null, transaction).Select(d => d as IDictionary<string, object>).ToArray();
+            var results = conn.Query(sql: SelectTempTable(tempTable), param: null, transaction: transaction).Select(d => d as IDictionary<string, object>).ToArray();
 
             if (results == null || results.Any() == false)
                 throw new DataException("Failed to retrieve any results from the INSERT");
@@ -145,8 +220,54 @@ namespace SqlBulkCopyExample
                 => AfterInsert(x, results[idx]))
                 .ToList();
 
-            conn.Execute(DropTempTable(tempTable), null, transaction);
+            conn.Execute(sql: DropTempTable(tempTable), param: null, transaction: transaction);
             
+            return items;
+        }
+
+        protected virtual async Task<IEnumerable<T>> ExecuteInsertAsync(
+            IEnumerable<T> items,
+            IEnumerable<ColumnMapping<T>> columns,
+            IEnumerable<ColumnMapping<T>> identities,
+            IDbConnection conn,
+            IDbTransaction transaction)
+        {
+            var rng = new Random(Environment.TickCount);
+            var tempTable = String.Format("{0}_{1}", TableName, rng.Next(0, 10000000));
+            var insertStatement = String.Format("{0} {1} {2} {3};",
+                BeginInsertStatement(),
+                ListColumns(columns),
+                InsertIntoTempTable(tempTable, identities),
+                ListValues(columns));
+            var columnList = columns.ToList();
+            var transformedItems = items.Select(x =>
+            {
+                var expando = new ExpandoObject { };
+                columnList.ForEach(y => y.MapToRow(expando, x));
+                return expando;
+            })
+           .ToList();
+
+            await conn.ExecuteAsync(sql: CreateTempTable(tempTable, identities), param: null, transaction: transaction);
+
+            await conn.ExecuteAsync(sql: insertStatement, param: transformedItems, transaction: transaction);
+
+            var resultsTask =  await conn.QueryAsync(sql: SelectTempTable(tempTable), param: null, transaction: transaction);
+
+            var results = resultsTask.Select(d => d as IDictionary<string, object>).ToArray();
+
+            if (results == null || results.Any() == false)
+                throw new DataException("Failed to retrieve any results from the INSERT");
+
+            if (results.Count() != items.Count())
+                throw new DataException("Received the incorrect number of results from the INSERT");
+
+            items = items.Select((x, idx)
+                => AfterInsert(x, results[idx]))
+                .ToList();
+
+            await conn.ExecuteAsync(sql: DropTempTable(tempTable), param: null, transaction: transaction);
+
             return items;
         }
 
